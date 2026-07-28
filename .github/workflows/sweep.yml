@@ -1,0 +1,52 @@
+name: liber-primus-pad-sweep
+
+# Manual trigger. Actions tab -> this workflow -> "Run workflow".
+on:
+  workflow_dispatch:
+    inputs:
+      shards:
+        description: 'number of shards (each is one runner)'
+        default: '20'
+
+jobs:
+  sweep:
+    runs-on: ubuntu-latest
+    timeout-minutes: 350          # under the 6h hard limit
+    strategy:
+      fail-fast: false            # one shard failing must not kill the rest
+      matrix:
+        shard: [0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build
+        run: cc -O3 -march=native -o sweep sweep.c
+
+      - name: Sweep shard ${{ matrix.shard }}
+        run: |
+          TOTAL=4294967296
+          SHARDS=20
+          PER=$(( TOTAL / SHARDS ))
+          START=$(( ${{ matrix.shard }} * PER ))
+          END=$(( START + PER ))
+          if [ ${{ matrix.shard }} -eq 19 ]; then END=4294967296; fi   # absorb remainder
+          echo "shard ${{ matrix.shard }}: seeds [$START,$END)"
+          # split across the runner's 2 cores
+          HALF=$(( START + PER / 2 ))
+          ./sweep lp_corpus.txt $START $HALF > hits_a.txt 2>prog_a.txt &
+          ./sweep lp_corpus.txt $HALF  $END  > hits_b.txt 2>prog_b.txt &
+          wait
+          cat hits_a.txt hits_b.txt > hits_${{ matrix.shard }}.txt
+          echo "--- hits in this shard ---"
+          cat hits_${{ matrix.shard }}.txt
+          if [ -s hits_${{ matrix.shard }}.txt ]; then
+            echo "::warning::HIT FOUND in shard ${{ matrix.shard }}"
+          fi
+
+      - name: Upload hits
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: hits-shard-${{ matrix.shard }}
+          path: hits_${{ matrix.shard }}.txt
+          if-no-files-found: ignore
