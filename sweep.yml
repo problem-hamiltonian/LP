@@ -1,52 +1,58 @@
 name: liber-primus-pad-sweep
 
-# Manual trigger. Actions tab -> this workflow -> "Run workflow".
 on:
   workflow_dispatch:
-    inputs:
-      shards:
-        description: 'number of shards (each is one runner)'
-        default: '20'
 
 jobs:
   sweep:
     runs-on: ubuntu-latest
-    timeout-minutes: 350          # under the 6h hard limit
+    timeout-minutes: 350
     strategy:
-      fail-fast: false            # one shard failing must not kill the rest
+      fail-fast: false
       matrix:
         shard: [0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19]
     steps:
       - uses: actions/checkout@v4
 
+      - name: Environment
+        run: |
+          echo "cores: $(nproc)"
+          ls -l sweep.c lp_corpus.txt
+          echo "corpus lines: $(wc -l < lp_corpus.txt)"
+
       - name: Build
-        run: cc -O3 -march=native -o sweep sweep.c
+        run: |
+          cc -O3 -o sweep sweep.c
+          test -x ./sweep || { echo "BUILD FAILED"; exit 1; }
+
+      - name: Self-test
+        run: |
+          ./sweep lp_corpus.txt 0 20000
+          echo "self-test finished"
 
       - name: Sweep shard ${{ matrix.shard }}
         run: |
+          set -x
+          CORES=$(nproc)
           TOTAL=4294967296
-          SHARDS=20
-          PER=$(( TOTAL / SHARDS ))
+          PER=$(( TOTAL / 20 ))
           START=$(( ${{ matrix.shard }} * PER ))
           END=$(( START + PER ))
-          if [ ${{ matrix.shard }} -eq 19 ]; then END=4294967296; fi   # absorb remainder
-          echo "shard ${{ matrix.shard }}: seeds [$START,$END)"
-          # split across the runner's 2 cores
-          HALF=$(( START + PER / 2 ))
-          ./sweep lp_corpus.txt $START $HALF > hits_a.txt 2>prog_a.txt &
-          ./sweep lp_corpus.txt $HALF  $END  > hits_b.txt 2>prog_b.txt &
-          wait
-          cat hits_a.txt hits_b.txt > hits_${{ matrix.shard }}.txt
-          echo "--- hits in this shard ---"
-          cat hits_${{ matrix.shard }}.txt
-          if [ -s hits_${{ matrix.shard }}.txt ]; then
-            echo "::warning::HIT FOUND in shard ${{ matrix.shard }}"
-          fi
-
-      - name: Upload hits
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: hits-shard-${{ matrix.shard }}
-          path: hits_${{ matrix.shard }}.txt
-          if-no-files-found: ignore
+          if [ "${{ matrix.shard }}" -eq 19 ]; then END=$TOTAL; fi
+          echo "shard=${{ matrix.shard }} cores=$CORES START=$START END=$END total=$(( END - START ))"
+          CHUNK=$(( (END - START) / CORES ))
+          pids=""
+          i=0
+          while [ $i -lt $CORES ]; do
+            S=$(( START + i * CHUNK ))
+            E=$(( S + CHUNK ))
+            if [ $(( i + 1 )) -eq $CORES ]; then E=$END; fi
+            ( ./sweep lp_corpus.txt $S $E | sed "s/^/[core$i] /" ) &
+            pids="$pids $!"
+            i=$(( i + 1 ))
+          done
+          echo "launched pids:$pids"
+          rc=0
+          for p in $pids; do wait $p || rc=$?; done
+          echo "all cores finished rc=$rc"
+          exit $rc
