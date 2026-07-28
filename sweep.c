@@ -15,6 +15,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <stdint.h>
+#include <time.h>
 
 #define N 624
 #define M 397
@@ -111,7 +112,17 @@ int main(int argc, char **argv) {
             (unsigned long long)start, (unsigned long long)end);
 
     int buf[CONFIRM]; int hits = 0;
+    uint64_t span = end - start, tick = span / 20 ? span / 20 : 1;
+    time_t t0 = time(NULL);
     for (uint64_t seed = start; seed < end; seed++) {
+        if ((seed - start) % tick == 0 && seed > start) {
+            double frac = (double)(seed - start) / span;
+            long el = (long)(time(NULL) - t0);
+            printf("progress %.0f%%  seed=%llu  elapsed=%lds  eta=%lds\n",
+                   frac*100, (unsigned long long)seed, el,
+                   frac > 0 ? (long)(el/frac - el) : 0);
+            fflush(stdout);
+        }
         for (int mode = 0; mode < 6; mode++) {       /* 3 call patterns x 2 seedings */
             uint32_t key[2] = { (uint32_t)(seed & 0xffffffffUL), (uint32_t)(seed >> 32) };
             if (mode & 1) init_by_array(key, seed >> 32 ? 2 : 1);
@@ -134,6 +145,7 @@ int main(int argc, char **argv) {
             }
         }
     }
-    fprintf(stderr, "done; %d hits\n", hits);
+    printf("DONE swept %llu seeds in %lds; %d hits\n",
+           (unsigned long long)(end-start), (long)(time(NULL)-t0), hits);
     return 0;
 }
